@@ -1,0 +1,209 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Route53 Hosted Zones Sync - Serverless Architecture & Private Hosted Zone
+
+Parameters:
+  LatestAmiId:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
+  CidrBlock:
+    Type: String
+    Default: "10.128.0.0/16"
+
+Resources:
+# ---------- VPC RESOURCES ----------
+  # VPC resource
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref CidrBlock
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Join
+            - "-"
+            - - "vpc"
+              - !Ref AWS::Region
+
+ # Subnets 
+  VPCSubnetWorkload:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [0, !Cidr [!GetAtt VPC.CidrBlock, 6, 8]]
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs 
+          Ref: "AWS::Region"
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Join
+            - "-"
+            - - "workload-subnet"
+              - !Ref AWS::Region
+  
+  VPCSubnetEndpoints:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [1, !Cidr [!GetAtt VPC.CidrBlock, 6, 8]]
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs 
+          Ref: "AWS::Region"
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Join
+            - "-"
+            - - "endpoints-subnet"
+              - !Ref AWS::Region
+
+  # Route Tables
+  VPCRouteTableWorkload:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - "-"
+            - - "workload-rt"
+              - !Ref AWS::Region
+  
+  VPCWorkloadSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref VPCRouteTableWorkload
+      SubnetId: !Ref VPCSubnetWorkload
+
+  VPCRouteTableEndpoints:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join
+            - "-"
+            - - "endpoints-rt"
+              - !Ref AWS::Region
+  
+  VPCEndpointsSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref VPCRouteTableEndpoints
+      SubnetId: !Ref VPCSubnetEndpoints
+
+  # Security Groups (Instance and VPC endpoint)
+  VPCInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Production VPC - Instance Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - Description: Allowing any traffic
+          IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref CidrBlock
+  
+  VPCEndpointsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Production VPC - Endpoints Security Group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - Description: Allowing HTTPS
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref VPCInstanceSecurityGroup
+  
+  # EC2 Instances
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      SecurityGroupIds:
+        - !Ref VPCInstanceSecurityGroup
+      SubnetId:
+        !Ref VPCSubnetWorkload
+      ImageId: !Ref LatestAmiId
+      IamInstanceProfile: !Ref EC2SSMInstanceProfileWorkloads
+      Tags:
+        - Key: Name
+          Value: !Join
+            - "-"
+            - - "instance"
+              - !Ref AWS::Region
+   
+  # SSM Endpoints
+  SSMVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcId: !Ref VPC
+      SubnetIds:
+        - !Ref VPCSubnetEndpoints
+      SecurityGroupIds:
+        - !Ref VPCEndpointsSecurityGroup
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: True
+
+  SSMMessagesVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+      VpcId: !Ref VPC
+      SubnetIds:
+        - !Ref VPCSubnetEndpoints
+      SecurityGroupIds:
+        - !Ref VPCEndpointsSecurityGroup
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: True
+
+  EC2MessagesVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
+      VpcId: !Ref VPC
+      SubnetIds:
+        - !Ref VPCSubnetEndpoints
+      SecurityGroupIds:
+        - !Ref VPCEndpointsSecurityGroup
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: True
+
+  # EC2 Instance Role (SSM access)
+  EC2SSMIAMRoleWorkloads:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Path: /
+
+  EC2SSMInstanceProfileWorkloads:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2SSMIAMRoleWorkloads
+
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+    Description: VPC ID
