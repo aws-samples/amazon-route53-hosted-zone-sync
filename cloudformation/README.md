@@ -1,7 +1,5 @@
 # Amazon Route53 Hosted Zone record replication (Public to Private) - AWS CloudFormation
 
-This repository shows an example of DNS record replication between two [Amazon Route 53](https://aws.amazon.com/route53/) Hosted Zones. In this specific example, the replication is done between the records created in a Public Hosted Zone (owned by you) and a Private Hosted Zone (created in the example). The Private Hosted Zone will have the same zone name as the Public Hosted Zone. Why? Because we want to show how you can sync a Public and Private Hosted Zones to allow resolution of public records inside your VPC while you can keep some specific private resolution.
-
 ![Architecture](../image/route53-sync.png "Solution's diagram")
 
 ## Deployment instructions
